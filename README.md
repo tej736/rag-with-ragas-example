@@ -225,6 +225,16 @@ You can customize the RAG pipeline by modifying the following parameters in the 
 - **Docker Connection Errors**: Check if the correct ports are exposed and mapped.
 - **Out of Memory Errors**: Try reducing the chunk size or the number of documents processed at once.
 
+## Reproducibility, Cloud, and Data Platform Hooks
+
+- **Reproducible runs**: Every query/eval run is persisted to `app/output/experiments/runs.jsonl` and `app/output/experiments/runs.csv`.
+- **Dataset version metadata**: Ingestion metadata is tracked in `app/output/datasets/manifest.jsonl` and `app/output/datasets/ingestions.csv`.
+- **Containerized local deployment**: Use `docker compose up --build` for reproducible local setup.
+- **Azure/Databricks integration path (optional)**:
+  - Sync `runs.csv` and `ingestions.csv` into Azure Blob/Data Lake for archival.
+  - Ingest experiment CSV outputs into Databricks Delta tables for advanced analysis.
+  - Build dashboards from these SQL-friendly outputs in your preferred BI stack.
+
 ## Contributing
 
 Contributions to this project are welcome! Please follow these steps:
