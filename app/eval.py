@@ -163,6 +163,9 @@ class Eval:
             "faithfulness_mean": float(result_df["faithfulness"].mean()),
             "answer_relevancy_mean": float(result_df["answer_relevancy"].mean()),
         }
+        avg_answer_latency = (
+            sum(answer_latencies) / len(answer_latencies) if answer_latencies else 0.0
+        )
 
         self.tracker.log_run(
             {
@@ -176,9 +179,7 @@ class Eval:
                 "top_k": top_k,
                 "test_size": test_size,
                 "eval_latency_seconds": round(eval_latency, 4),
-                "avg_answer_latency_seconds": round(
-                    sum(answer_latencies) / max(len(answer_latencies), 1), 4
-                ),
+                "avg_answer_latency_seconds": round(avg_answer_latency, 4),
                 **metric_summary,
             }
         )

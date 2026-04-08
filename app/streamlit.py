@@ -303,7 +303,7 @@ class RagWithRagasApp:
         st.subheader("Export Reports")
         st.download_button(
             "Download Experiment Runs CSV",
-            data=open(runs_path, "rb").read(),
+            data=self._read_binary_file(runs_path),
             file_name="runs.csv",
             mime="text/csv",
         )
@@ -503,9 +503,11 @@ Generated at: {datetime.now(timezone.utc).isoformat()}
                 ]
                 available_cols = [c for c in metric_cols if c in eval_df.columns]
                 if available_cols:
-                    melted = eval_df[available_cols].reset_index().melt(id_vars="index", var_name="metric", value_name="score")
+                    metrics_long_format = eval_df[available_cols].reset_index().melt(
+                        id_vars="index", var_name="metric", value_name="score"
+                    )
                     fig = px.bar(
-                        melted,
+                        metrics_long_format,
                         x="metric",
                         y="score",
                         color="metric",
@@ -521,6 +523,11 @@ Generated at: {datetime.now(timezone.utc).isoformat()}
         self._init_state()
         self.sidebar()
         self.main_section()
+
+    @staticmethod
+    def _read_binary_file(path: str) -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
 
 
 if __name__ == "__main__":

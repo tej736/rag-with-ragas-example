@@ -31,14 +31,18 @@ class ExperimentTracker:
     def _append_csv(self, run: dict) -> None:
         fieldnames = sorted(run.keys())
         file_exists = os.path.exists(self.csv_path)
+        rows = []
+        existing_fields = []
 
         if file_exists:
             with open(self.csv_path, "r", encoding="utf-8", newline="") as f:
                 reader = csv.DictReader(f)
                 existing_fields = reader.fieldnames or []
+                rows = list(reader)
             fieldnames = sorted(set(existing_fields).union(run.keys()))
             if set(fieldnames) != set(existing_fields):
-                self._rewrite_csv_with_new_fields(fieldnames)
+                self._rewrite_csv_with_new_fields(fieldnames, rows)
+                file_exists = True
 
         with open(self.csv_path, "a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -46,12 +50,7 @@ class ExperimentTracker:
                 writer.writeheader()
             writer.writerow({k: run.get(k, "") for k in fieldnames})
 
-    def _rewrite_csv_with_new_fields(self, fieldnames: list[str]) -> None:
-        rows = []
-        if os.path.exists(self.csv_path):
-            with open(self.csv_path, "r", encoding="utf-8", newline="") as f:
-                rows = list(csv.DictReader(f))
-
+    def _rewrite_csv_with_new_fields(self, fieldnames: list[str], rows: list[dict]) -> None:
         with open(self.csv_path, "w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

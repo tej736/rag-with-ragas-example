@@ -69,20 +69,8 @@ class Rag:
         response = await self.client.embeddings.create(input=chunk, model=embedding_model)
         return response.data[0].embedding
 
-    def _hf_embed_sync(self, chunk: str, embedding_model: str) -> list[float]:
-        if not self.hf_api_token:
-            raise ValueError("HUGGINGFACE_API_TOKEN is required for Hugging Face embeddings")
-
-        endpoint = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{embedding_model}"
-        headers = {
-            "Authorization": f"Bearer {self.hf_api_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {"inputs": chunk, "options": {"wait_for_model": True}}
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
-        response.raise_for_status()
-        result = response.json()
-
+    def _parse_hf_embedding_response(self, result) -> list[float]:
+        """Parse Hugging Face feature-extraction payloads to a single vector."""
         if isinstance(result, list) and result and isinstance(result[0], list):
             # Token-level vectors -> average pooling
             if result and result[0] and isinstance(result[0][0], list):
@@ -96,6 +84,21 @@ class Rag:
             return [float(v) for v in result]
 
         raise ValueError("Unexpected Hugging Face embedding response format")
+
+    def _hf_embed_sync(self, chunk: str, embedding_model: str) -> list[float]:
+        if not self.hf_api_token:
+            raise ValueError("HUGGINGFACE_API_TOKEN is required for Hugging Face embeddings")
+
+        endpoint = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{embedding_model}"
+        headers = {
+            "Authorization": f"Bearer {self.hf_api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"inputs": chunk, "options": {"wait_for_model": True}}
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+        return self._parse_hf_embedding_response(result)
 
     async def _embed(self, chunk: str, provider: str, embedding_model: str) -> list[float]:
         provider = normalize_provider(provider)
@@ -297,7 +300,7 @@ class Rag:
             if not self.hf_api_token:
                 raise ValueError("HUGGINGFACE_API_TOKEN is required for Hugging Face generation")
 
-            prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+            prompt = self._build_hf_prompt(messages)
             endpoint = f"https://api-inference.huggingface.co/models/{model}"
             headers = {
                 "Authorization": f"Bearer {self.hf_api_token}",
@@ -330,6 +333,13 @@ class Rag:
             return {"text": text, "latency_seconds": latency, "usage": {}}
 
         raise ValueError(f"Unsupported provider: {provider}")
+
+    def _build_hf_prompt(self, messages: list[dict]) -> str:
+        """
+        Build a generic role-tagged prompt for Hugging Face text-generation models.
+        This format is intentionally provider-agnostic and may be tuned per model family.
+        """
+        return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
 
     async def call_gpt(self, messages, model="gpt-4-turbo"):
         """Backward-compatible wrapper for single-response generation."""
