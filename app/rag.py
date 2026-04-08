@@ -4,6 +4,7 @@ import json
 import requests
 import asyncio
 import numpy as np
+import time
 from termcolor import colored
 from PyPDF2 import PdfReader
 from sklearn.metrics.pairwise import cosine_similarity
@@ -13,12 +14,15 @@ from langchain.schema import Document
 
 from dotenv import load_dotenv
 
+from app.config import normalize_provider
+
 load_dotenv()
 
 
 class Rag:
     def __init__(self):
         self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "YOUR_API_KEY"))
+        self.hf_api_token = os.getenv("HUGGINGFACE_API_TOKEN", "")
 
     async def fetch_text_from_url(self, url):
         """Fetches text from a specified URL."""
@@ -55,39 +59,87 @@ class Rag:
         enc = tiktoken.encoding_for_model(token_encoding_model)
         encoded = enc.encode(text)
         chunks = []
-        chunk_size = chunk_size
-        overlap = overlap
         for i in range(0, len(encoded), chunk_size - overlap):
             chunk = encoded[i : i + chunk_size]
             chunks.append(chunk)
         decoded_chunks = [enc.decode(chunk) for chunk in chunks]
         return decoded_chunks
 
-    async def embed_text_chunks(self, chunks, embedding_model="text-embedding-3-large"):
+    async def _openai_embed(self, chunk: str, embedding_model: str) -> list[float]:
+        response = await self.client.embeddings.create(input=chunk, model=embedding_model)
+        return response.data[0].embedding
+
+    def _hf_embed_sync(self, chunk: str, embedding_model: str) -> list[float]:
+        if not self.hf_api_token:
+            raise ValueError("HUGGINGFACE_API_TOKEN is required for Hugging Face embeddings")
+
+        endpoint = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{embedding_model}"
+        headers = {
+            "Authorization": f"Bearer {self.hf_api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"inputs": chunk, "options": {"wait_for_model": True}}
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        result = response.json()
+
+        if isinstance(result, list) and result and isinstance(result[0], list):
+            # Token-level vectors -> average pooling
+            if result and result[0] and isinstance(result[0][0], list):
+                token_vectors = result[0]
+            else:
+                token_vectors = result
+            arr = np.array(token_vectors, dtype=float)
+            return arr.mean(axis=0).tolist()
+
+        if isinstance(result, list):
+            return [float(v) for v in result]
+
+        raise ValueError("Unexpected Hugging Face embedding response format")
+
+    async def _embed(self, chunk: str, provider: str, embedding_model: str) -> list[float]:
+        provider = normalize_provider(provider)
+        if provider == "openai":
+            return await self._openai_embed(chunk, embedding_model)
+        if provider == "huggingface":
+            return await asyncio.to_thread(self._hf_embed_sync, chunk, embedding_model)
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    async def embed_text_chunks(
+        self,
+        chunks,
+        embedding_model="text-embedding-3-large",
+        embedding_provider="openai",
+    ):
         """Embeds text chunks asynchronously."""
 
         async def embed_chunk(chunk):
-            response = await self.client.embeddings.create(
-                input=chunk, model=embedding_model
+            embedding = await self._embed(
+                chunk=chunk,
+                provider=embedding_provider,
+                embedding_model=embedding_model,
             )
-            return {"text": chunk, "embedding": response.data[0].embedding}
+            return {"text": chunk, "embedding": embedding}
 
         tasks = [embed_chunk(chunk) for chunk in chunks]
         embedded_chunks = await asyncio.gather(*tasks)
         return embedded_chunks
 
     async def embed_text_chunks_for_eval(
-        self, chunks, embedding_model="text-embedding-3-large"
+        self,
+        chunks,
+        embedding_model="text-embedding-3-large",
+        embedding_provider="openai",
     ):
         """Embeds text chunks for evaluation purposes asynchronously."""
 
         async def embed_chunk_for_eval(chunk):
-            response = await self.client.embeddings.create(
-                input=chunk, model=embedding_model
+            embedding = await self._embed(
+                chunk=chunk,
+                provider=embedding_provider,
+                embedding_model=embedding_model,
             )
-            return Document(
-                page_content=chunk, metadata={"embedding": response.data[0].embedding}
-            )
+            return Document(page_content=chunk, metadata={"embedding": embedding})
 
         tasks = [embed_chunk_for_eval(chunk) for chunk in chunks]
         embedded_chunks = await asyncio.gather(*tasks)
@@ -95,6 +147,7 @@ class Rag:
 
     def save_chunks_to_file(self, chunks, filename="app/output/chunks.json"):
         """Saves text chunks to a file."""
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, "w", encoding="utf-8") as json_file:
             json.dump(chunks, json_file, indent=4)
 
@@ -106,6 +159,7 @@ class Rag:
             {"page_content": chunk.page_content, "metadata": chunk.metadata}
             for chunk in chunks
         ]
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, "w", encoding="utf-8") as json_file:
             json.dump(chunks_dict, json_file, indent=4)
 
@@ -115,18 +169,20 @@ class Rag:
         token_encoding_model="gpt-4",
         chunk_size=800,
         overlap=400,
+        embedding_provider="openai",
+        embedding_model="text-embedding-3-large",
     ):
         """Processes all files in a specified folder for evaluation."""
-        if os.path.exists("app/output/chunks.json"):
-            with open(
-                "app/output/data_chunks.json", "r", encoding="utf-8"
-            ) as json_file:
+        cache_path = "app/output/data_chunks.json"
+
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as json_file:
                 all_chunks = json.load(json_file)
-                if isinstance(all_chunks[0], dict):
+                if all_chunks and isinstance(all_chunks[0], dict):
                     all_chunks = [
                         Document(
                             page_content=chunk["page_content"],
-                            metadata=chunk["metadata"],
+                            metadata=chunk.get("metadata", {}),
                         )
                         for chunk in all_chunks
                     ]
@@ -149,76 +205,141 @@ class Rag:
                     overlap=overlap,
                 )
                 for chunk in chunks:
-                    document = Document(
-                        page_content=chunk, metadata={"file_name": filename}
-                    )
+                    document = Document(page_content=chunk, metadata={"file_name": filename})
                     all_chunks.append(document)
                 print(colored(f"Processed {filename}", "green"))
 
-        # Embed the text chunks
         all_chunks = await self.embed_text_chunks_for_eval(
-            [chunk.page_content for chunk in all_chunks]
+            [chunk.page_content for chunk in all_chunks],
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
         )
 
-        # Save all chunks to a file
-        self.save_chunks_to_file_for_eval(
-            all_chunks, filename="app/output/data_chunks.json"
-        )
+        self.save_chunks_to_file_for_eval(all_chunks, filename=cache_path)
 
         return all_chunks
 
     def clear_output_folder(self):
         """Clears all JSON and CSV files in the 'app/output' directory."""
+        os.makedirs("app/output", exist_ok=True)
         for filename in os.listdir("app/output"):
             if filename.endswith(".json") or filename.endswith(".csv"):
-                file_path = os.path.join(
-                    "app/output", filename
-                )  # Construct the full file path
-                os.remove(file_path)  # Remove the file at the given path
+                file_path = os.path.join("app/output", filename)
+                os.remove(file_path)
 
-    # Good place for prompt engineering of the query if deisred.
-    # For example, adding a prefix or postfix to the query to help with context.
     async def embed_query(
-        self, query, prequery="", postquery="", embedding_model="text-embedding-3-large"
+        self,
+        query,
+        prequery="",
+        postquery="",
+        embedding_model="text-embedding-3-large",
+        embedding_provider="openai",
     ):
         """Embeds a query with optional pre and post text."""
         if prequery == "" and postquery == "":
             full_query = query
         else:
             full_query = f"{prequery} {query} {postquery}"
-        response = await self.client.embeddings.create(
-            input=full_query, model=embedding_model
-        )
-        return response.data[0].embedding
 
-    def cosine_similarity_search(self, query_embedding, embedded_chunks, top_k=5):
+        return await self._embed(
+            chunk=full_query,
+            provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+
+    def cosine_similarity_search(
+        self, query_embedding, embedded_chunks, top_k=5, return_scores=False
+    ):
         """Performs a cosine similarity search between a query embedding and a list of text embeddings."""
+        if not embedded_chunks:
+            return []
+
         chunk_embeddings = np.array([chunk["embedding"] for chunk in embedded_chunks])
         similarities = cosine_similarity([query_embedding], chunk_embeddings)[0]
         top_k_indices = similarities.argsort()[-top_k:][::-1]
+
+        if return_scores:
+            return [
+                {
+                    "text": embedded_chunks[i]["text"],
+                    "score": float(similarities[i]),
+                }
+                for i in top_k_indices
+            ]
+
         return [embedded_chunks[i]["text"] for i in top_k_indices]
 
     def save_top_chunks_text_to_file(
         self, top_chunks, filename="app/output/top_chunks.json"
     ):
         """Saves the top chunks of text to a file."""
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         top_chunks_text = [chunk for chunk in top_chunks]
         with open(filename, "w", encoding="utf-8") as json_file:
             json.dump(top_chunks_text, json_file, indent=4)
 
+    async def generate_answer(self, messages, model="gpt-4-turbo", provider="openai"):
+        provider = normalize_provider(provider)
+        start = time.perf_counter()
+
+        if provider == "openai":
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=False,
+            )
+            latency = time.perf_counter() - start
+            text = response.choices[0].message.content
+            usage = response.usage.model_dump() if response.usage else {}
+            return {"text": text, "latency_seconds": latency, "usage": usage}
+
+        if provider == "huggingface":
+            if not self.hf_api_token:
+                raise ValueError("HUGGINGFACE_API_TOKEN is required for Hugging Face generation")
+
+            prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+            endpoint = f"https://api-inference.huggingface.co/models/{model}"
+            headers = {
+                "Authorization": f"Bearer {self.hf_api_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 512, "return_full_text": False},
+                "options": {"wait_for_model": True},
+            }
+            response = await asyncio.to_thread(
+                lambda: requests.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=180,
+                )
+            )
+            response.raise_for_status()
+            result = response.json()
+            latency = time.perf_counter() - start
+
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                text = result[0].get("generated_text", "")
+            elif isinstance(result, dict) and "generated_text" in result:
+                text = result["generated_text"]
+            else:
+                text = str(result)
+
+            return {"text": text, "latency_seconds": latency, "usage": {}}
+
+        raise ValueError(f"Unsupported provider: {provider}")
+
     async def call_gpt(self, messages, model="gpt-4-turbo"):
-        """Calls the GPT-4 model to generate responses based on the provided messages."""
-        response = await self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            stream=False,
-        )
-        assistant_response = response.choices[0].message.content
+        """Backward-compatible wrapper for single-response generation."""
+        response = await self.generate_answer(messages=messages, model=model, provider="openai")
+        assistant_response = response["text"]
         print(colored(assistant_response, "green"))
         return assistant_response
 
     async def call_gpt_with_streaming(self, messages, model="gpt-4-turbo"):
-        """Calls the GPT-4 model with streaming enabled to generate responses based on the provided messages."""
+        """Calls the GPT model with streaming enabled to generate responses based on the provided messages."""
         response = await self.client.chat.completions.create(
             model=model,
             messages=messages,
@@ -236,7 +357,7 @@ class Rag:
     async def call_gpt_with_streaming_for_streamlit(
         self, messages, model="gpt-4-turbo"
     ):
-        """Calls the GPT-4 model with streaming enabled to generate responses based on the provided messages."""
+        """Calls the GPT model with streaming enabled to generate responses based on the provided messages."""
         response = await self.client.chat.completions.create(
             model=model,
             messages=messages,
@@ -250,7 +371,7 @@ class Rag:
                 )
 
     async def call_gpt_with_json(self, messages, model="gpt-4-turbo"):
-        """Calls the GPT-4 model to generate JSON formatted responses based on the provided messages."""
+        """Calls the GPT model to generate JSON formatted responses based on the provided messages."""
         messages.insert(
             0,
             {

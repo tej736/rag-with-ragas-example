@@ -1,10 +1,17 @@
-# Basic RAG 📚 with RAGAS Evaluation ✅
+# LLM Evaluation & RAG Experimentation Lab 📚✅
 
-Build and evaluate your own Retrieval-Augmented Generation (RAG) system in (almost) plain Python. This is a fully functional and highly modularized RAG system that can be used as a base for building custom RAG systems.
+Build, compare, and evaluate Retrieval-Augmented Generation (RAG) systems with provider-agnostic pipelines, RAGAS quality scoring, and analytics dashboards.
 
 ## Introduction
 
-Retrieval Augmented Generation (RAG) is a technique that enhances language models by providing them with relevant information retrieved from a knowledge base. This project demonstrates a RAG pipeline and evaluates its performance using the RAGAS framework.
+Retrieval Augmented Generation (RAG) enhances language models by grounding responses in retrieved context. This project now provides:
+
+- OpenAI + Hugging Face provider support for both embeddings and generation
+- Side-by-side model/provider comparisons in Streamlit
+- RAGAS-based evaluation workflows
+- Experiment tracking with SQL-friendly outputs (`app/output/experiments/runs.csv`)
+- Plotly analytics for latency and quality drift across runs
+- Dataset ingestion/version metadata (`app/output/datasets`)
 
 ## Project Structure
 
@@ -22,7 +29,8 @@ Retrieval Augmented Generation (RAG) is a technique that enhances language model
 - Python 3.10 or later
 - Anaconda (recommended)
 - Docker (optional)
-- OpenAI API Key
+- OpenAI API Key (for OpenAI runs)
+- Hugging Face API Token (for Hugging Face runs)
 
 ## Quick Start
 
@@ -34,7 +42,7 @@ If you meet all of the above requirements, you could launch the RAG with RAGAS E
 
 Access Local URL: http://localhost:8080
 
-You will be asked to enter your OPENAI_API_KEY to continue.
+You can enter `OPENAI_API_KEY` and/or `HUGGINGFACE_API_TOKEN` in the sidebar.
 
 Coming soon: A deployed basic RAG with RAGAS Streamlit App can be accessed directly at http:// (bring your own key).
 
@@ -62,7 +70,7 @@ To set up the Conda environment and install the required packages, follow these 
 
 ## Setting Up Environment Variables
 
-Before running the application, ensure you have set the `OPENAI_API_KEY` in a `.env` file in the root directory of your project. This key is necessary for accessing OpenAI's API. To obtain key, visit [Overview - OpenAI API](https://platform.openai.com/docs/overview).
+Before running the application, ensure you have set API credentials in a `.env` file in the root directory of your project.
 
 1. **Create a `.env` file in the root directory:**
 
@@ -70,15 +78,16 @@ Before running the application, ensure you have set the `OPENAI_API_KEY` in a `.
    touch .env
    ```
 
-2. **Add your OpenAI API key to the `.env` file:**
+2. **Add your provider keys to the `.env` file:**
 
    ```sh
    echo "OPENAI_API_KEY=your_openai_api_key_here" >> .env
+   echo "HUGGINGFACE_API_TOKEN=your_huggingface_token_here" >> .env
    ```
 
-Replace `your_openai_api_key_here` with your actual OpenAI API key.
+Replace placeholders with your actual credentials.
 
-The current implementation defaults to 'gpt-4-turbo' for the LLM model and OpenAI's 'text-embedding-3-large' for the embeddings model.
+The app supports provider/model selection directly in Streamlit for OpenAI and Hugging Face.
 
 **3. Run these 3 commands to check the application components:**
 
@@ -149,7 +158,7 @@ The `Rag` class in `rag.py` is the core of the RAG system. It handles:
 - Text processing and chunking
 - Embedding generation
 - Similarity search
-- Integration with OpenAI's API
+- Integration with OpenAI and Hugging Face inference APIs
 
 ### Chat Interface (chat.py)
 
